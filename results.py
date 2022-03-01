@@ -17,17 +17,19 @@ dram_rq_pat = re.compile(r'^ RQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+
 dram_wq_pat = re.compile(r'^ WQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+)  FULL:\s+(\d+)$')
 dram_dbus_pat = re.compile(r'^ DBUS AVG_CONGESTED_CYCLE:\s+(\d+\.?\d*)$')
 
+def expand(fname):
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(fname)))
+
 def unpack(elements):
-    for elem in itertools.chain.from_iterable(map(glob.iglob, elements)):
+    for elem in map(expand, elements):
         if os.path.isfile(elem):
             yield elem
         else:
             for b,_,f in os.walk(elem):
                 yield from (os.path.join(b,t) for t in f)
 
-def parse_file(fname):
-    cachestats = {}
-    corestats = {}
+def parse_file_core(fname):
+    corestats = pd.DataFrame(columns=['instructions','cycles'])
     tracename = ''
     with open(fname, 'rt') as rfp:
         for line in rfp:
@@ -37,12 +39,24 @@ def parse_file(fname):
 
             m = cpu_stats_pat.match(line)
             if m is not None:
-                corestats['cpu'+m[1]] = {k:int(v) for k,v in m.groupdict(0).items()}
+                x = pd.DataFrame.from_records([{k:int(v) for k,v in m.groupdict(0).items()}], index=pd.MultiIndex.from_arrays([[tracename], ['cpu'+m[1]]]))
+                corestats = pd.concat([corestats, x])
 
-            #m = cache_stats_pat.match(line)
-            #if m is not None:
-                #cachestats[m['name'], m['type'].lower(), 'hit'] = int(m['hits'])
-                #cachestats[m['name'], m['type'].lower(), 'miss'] = int(m['misses'])
+    return corestats
+
+def parse_file_cache(fname):
+    cachestats = {}
+    tracename = ''
+    with open(fname, 'rt') as rfp:
+        for line in rfp:
+            m = trace_file_pat.match(line)
+            if m is not None:
+                tracename = os.path.basename(m[2])
+
+            m = cache_stats_pat.match(line)
+            if m is not None:
+                cachestats[m['name'], m['type'].lower(), 'hit'] = int(m['hits'])
+                cachestats[m['name'], m['type'].lower(), 'miss'] = int(m['misses'])
 
             #m = pref_stats_pat.match(line)
             #if m is not None:
@@ -64,25 +78,43 @@ def parse_file(fname):
             #if m is not None:
                 #print('DRAM', m.groups())
 
-    return zip(itertools.repeat(tracename), *zip(*corestats.items()))
-    #return tracename, cachestats
+    return tracename, cachestats
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--base', type=str, nargs=1)
-    parser.add_argument('files', type=str, nargs='+')
+
+    # File lists
+    parser.add_argument('--base', action='append')
+    parser.add_argument('files', nargs='+')
+
+    # Data selectors
+    parser.add_argument('--speedup', action='store_true')
+    parser.add_argument('--cache', action='append')
     args = parser.parse_args()
 
-    test_vals = itertools.chain.from_iterable(parse_file(f) for f in unpack(args.files))
-    test_result = pd.DataFrame.from_dict({(f,c) : val for f,c,val in test_vals}, orient='index')
-    test_ipc = test_result['instructions'] / test_result['cycles']
+    if args.speedup:
+        test_result = pd.concat([parse_file_core(f) for f in unpack(args.files)])
+        print(test_result)
+        test_ipc = test_result['instructions'] / test_result['cycles']
+        #print(test_ipc)
 
-    base_vals = itertools.chain.from_iterable(parse_file(f) for f in unpack(args.base))
-    base_result = pd.DataFrame.from_dict({(f,c) : val for f,c,val in base_vals}, orient='index')
-    base_ipc = base_result['instructions'] / base_result['cycles']
+        base_result = pd.concat([parse_file_core(f) for f in unpack(args.base)])
+        base_ipc = base_result['instructions'] / base_result['cycles']
+        #print(base_ipc)
 
-    print(test_ipc/base_ipc)
+        result = test_ipc.div(base_ipc)
+        print(result)
+        #result.plot.bar()
+        #result.to_csv('results.csv')
 
-    #result = pd.DataFrame.from_dict(dict(parse_file(f) for f in unpack(args.files)))
-    #print(result.T)
+        #print(test_ipc/base_ipc)
+
+    if len(args.cache) > 0:
+        base_result = pd.DataFrame.from_dict(dict(parse_file_cache(f) for f in unpack(args.base)))
+        base_result = base_result.loc[args.cache]
+        test_result = pd.DataFrame.from_dict(dict(parse_file_cache(f) for f in unpack(args.files)))
+        test_result = test_result.loc[args.cache]
+        print(test_result - base_result)
+        print(base_result.sum(level=0))
+        print((test_result - base_result)/base_result.sum(level=0))
 
