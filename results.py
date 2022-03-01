@@ -7,72 +7,61 @@ import glob
 
 import pandas as pd
 
-trace_file_pat = re.compile(r'^CPU (?P<index>\d+) runs (?P<tracename>[-./\w\d]+)$')
+trace_file_pat = (
+        re.compile(r'^CPU (?P<index>\d+) runs (?P<tracename>[-./\w\d]+)$'),
+        lambda match: os.path.basename(match['tracename']),
+        lambda agg, result: agg if len(agg) > 0 else result,
+        ''
+    )
 
-def trace_file_proj(match):
-    return os.path.basename(match['tracename'])
+cpu_stats_pat = (
+        re.compile(r'^CPU (\d+) cumulative IPC: \d+\.?\d* instructions: (?P<instructions>\d+) cycles: (?P<cycles>\d+)$'),
+        lambda match : pd.DataFrame.from_records([{k:int(v) for k,v in match.groupdict(0).items()}], index=[int(match[1])]),
+        lambda agg, result: pd.concat([agg, result]),
+        pd.DataFrame(columns=['instructions','cycles'])
+    )
 
-def trace_file_agg(agg, result):
-    if len(agg) > 0:
-        return agg
-    return result
+cache_stats_pat = (
+        re.compile(r'^(?P<name>\S+) (?P<type>LOAD|RFO|PREFETCH|TRANSLATION)\s+ACCESS:\s+\d+  HIT:\s+(?P<hits>\d+)  MISS:\s+(?P<misses>\d+)$'),
+        lambda match: dict([((match['name'], match['type'].lower(), 'hit'), int(match['hits'])), ((match['name'], match['type'].lower(), 'miss'), int(match['misses']))]),
+        lambda agg, result: dict(**agg, **result),
+        {}
+    )
 
-cpu_stats_pat = re.compile(r'^CPU (\d+) cumulative IPC: \d+\.?\d* instructions: (?P<instructions>\d+) cycles: (?P<cycles>\d+)$')
+pref_stats_pat = (
+        re.compile(r'^(\S+) PREFETCH  REQUESTED:\s+(\d+)  ISSUED:\s+(\d+)  USEFUL:\s+(\d+)  USELESS:\s+(\d+)$'),
+        lambda m : print('AMAT', m.groups),
+        lambda agg, _: agg,
+        ''
+    )
 
-def cpu_stats_proj(match):
-    return pd.DataFrame.from_records([{k:int(v) for k,v in match.groupdict(0).items()}], index=[int(match[1])])
+amat_pat = (
+        re.compile(r'^(\S+) AVERAGE MISS LATENCY: (\d+\.?\d*) cycles$'),
+        lambda m : print('AMAT', m.groups),
+        lambda agg, _: agg,
+        ''
+    )
 
-def cpu_stats_agg(agg, result):
-    return pd.concat([agg, result])
+dram_rq_pat = (
+        re.compile(r'^ RQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+)$'),
+        lambda m : print('DRAM', m.groups),
+        lambda agg, _: agg,
+        ''
+    )
 
-cache_stats_pat = re.compile(r'^(?P<name>\S+) (?P<type>LOAD|RFO|PREFETCH|TRANSLATION)\s+ACCESS:\s+\d+  HIT:\s+(?P<hits>\d+)  MISS:\s+(?P<misses>\d+)$')
+dram_wq_pat = (
+        re.compile(r'^ WQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+)  FULL:\s+(\d+)$'),
+        lambda m : print('DRAM', m.groups),
+        lambda agg, _: agg,
+        ''
+    )
 
-def cache_stats_proj(match):
-    return dict([((match['name'], match['type'].lower(), 'hit'), int(match['hits'])), ((match['name'], match['type'].lower(), 'miss'), int(match['misses']))])
-
-def cache_stats_agg(agg, result):
-    agg.update(result)
-    return agg
-
-pref_stats_pat = re.compile(r'^(\S+) PREFETCH  REQUESTED:\s+(\d+)  ISSUED:\s+(\d+)  USEFUL:\s+(\d+)  USELESS:\s+(\d+)$')
-
-def pref_stats_proj(match):
-    print('AMAT', m.groups)
-
-def pref_stats_agg(agg, result):
-    return agg
-
-amat_pat = re.compile(r'^(\S+) AVERAGE MISS LATENCY: (\d+\.?\d*) cycles$')
-
-def amat_proj(match):
-    print('AMAT', m.groups)
-
-def amat_agg(agg, result):
-    return agg
-
-dram_rq_pat = re.compile(r'^ RQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+)$')
-
-def dram_rq_proj(match):
-    print('DRAM', m.groups)
-
-def dram_rq_agg(agg, result):
-    return agg
-
-dram_wq_pat = re.compile(r'^ WQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+)  FULL:\s+(\d+)$')
-
-def dram_wq_proj(match):
-    print('DRAM', m.groups)
-
-def dram_wq_agg(agg, result):
-    return agg
-
-dram_dbus_pat = re.compile(r'^ DBUS AVG_CONGESTED_CYCLE:\s+(\d+\.?\d*)$')
-
-def dram_dbus_proj(match):
-    print('DRAM', m.groups)
-
-def dram_dbus_agg(agg, result):
-    return agg
+dram_dbus_pat = (
+        re.compile(r'^ DBUS AVG_CONGESTED_CYCLE:\s+(\d+\.?\d*)$'),
+        lambda m : print('DRAM', m.groups),
+        lambda agg, _: agg,
+        ''
+    )
 
 # Return a functor over an iterable that matches each line, filters out Nones, projects the match, then aggregates
 def read_file(pat, proj, agg, init):
@@ -113,8 +102,8 @@ if __name__ == '__main__':
 
     if args.speedup:
         parsers = broadcast(
-            read_file(trace_file_pat, trace_file_proj, trace_file_agg, ''),
-            read_file(cpu_stats_pat, cpu_stats_proj, cpu_stats_agg, pd.DataFrame(columns=['instructions','cycles']))
+            read_file(*trace_file_pat),
+            read_file(*cpu_stats_pat)
         )
 
         test_result = dict(parse_file(parsers, f) for f in unpack(args.files))
@@ -136,8 +125,8 @@ if __name__ == '__main__':
 
     if args.cache is not None:
         parsers = broadcast(
-            read_file(trace_file_pat, trace_file_proj, trace_file_agg, ''),
-            read_file(cache_stats_pat, cache_stats_proj, cache_stats_agg, {})
+            read_file(*trace_file_pat),
+            read_file(*cache_stats_pat)
         )
 
         base_result = pd.DataFrame.from_dict(dict(parse_file(parsers, f) for f in unpack(args.base)))
