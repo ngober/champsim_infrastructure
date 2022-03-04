@@ -81,6 +81,25 @@ def parse_file(parsers, fname):
     with open(fname) as rfp:
         return parsers(rfp)
 
+def get_ipc(files):
+    parsers = broadcast(
+        read_file(*trace_file_pat),
+        read_file(*cpu_stats_pat)
+    )
+
+    tracenames, results = zip(*(parse_file(parsers, f) for f in unpack(files)))
+    result = pd.concat(results, keys=tracenames, names=['trace','cpu'])
+    return result['instructions'] / result['cycles']
+
+def get_cache_stats(files):
+    parsers = broadcast(
+        read_file(*trace_file_pat),
+        read_file(*cache_stats_pat)
+    )
+
+    base_result = dict(parse_file(parsers, f) for f in unpack(args.base))
+    return pd.concat(base_result.values(), keys=base_result.keys(), names=['trace','name'])
+
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
 
@@ -94,21 +113,12 @@ if __name__ == '__main__':
     argparser.add_argument('--cache', action='append')
     args = argparser.parse_args()
 
+    prefix = os.path.commonpath(args.files)
+    files = [(os.path.relpath(f, prefix), f) for f in args.files]
+
     if args.speedup:
-        parsers = broadcast(
-            read_file(*trace_file_pat),
-            read_file(*cpu_stats_pat)
-        )
-
-        tracenames, results = zip(*(parse_file(parsers, f) for f in unpack(args.base)))
-        base_result = pd.concat(results, keys=tracenames, names=['trace','cpu'])
-        base_ipc = base_result['instructions'] / base_result['cycles']
-        #print(base_ipc)
-
-        tracenames, results = zip(*(parse_file(parsers, f) for f in unpack(args.files)))
-        test_result = pd.concat(results, keys=tracenames, names=['trace','cpu'])
-        test_ipc = test_result['instructions'] / test_result['cycles']
-        #print(test_ipc)
+        base_ipc = get_ipc(args.base)
+        test_ipc = get_ipc(args.files)
 
         if args.output is not None:
             test_ipc.div(base_ipc).to_csv(args.output)
@@ -116,20 +126,8 @@ if __name__ == '__main__':
             print(test_ipc/base_ipc)
 
     if args.cache is not None:
-        parsers = broadcast(
-            read_file(*trace_file_pat),
-            read_file(*cache_stats_pat)
-        )
-
-        base_result = dict(parse_file(parsers, f) for f in unpack(args.base))
-        base_result = pd.concat(base_result.values(), keys=base_result.keys(), names=['trace','name'])
-        base_result = base_result.loc[(slice(None), args.cache), :]
-        #print(base_result)
-
-        test_result = dict(parse_file(parsers, f) for f in unpack(args.files))
-        test_result = pd.concat(test_result.values(), keys=test_result.keys(), names=['trace','name'])
-        test_result = test_result.loc[(slice(None), args.cache), :]
-        #print(test_result)
+        base_result = get_cache_stats(args.base).loc[(slice(None), args.cache), :]
+        test_result = get_cache_stats(args.files).loc[(slice(None), args.cache), :]
 
         print(test_result - base_result)
         print(base_result.sum(level=0))
