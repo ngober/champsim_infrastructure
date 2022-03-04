@@ -81,6 +81,7 @@ def parse_file(parsers, fname):
     with open(fname) as rfp:
         return parsers(rfp)
 
+# Get the instructions per cycle
 def get_ipc(files):
     parsers = broadcast(
         read_file(*trace_file_pat),
@@ -91,14 +92,42 @@ def get_ipc(files):
     result = pd.concat(results, keys=tracenames, names=['trace','cpu'])
     return result['instructions'] / result['cycles']
 
-def get_cache_stats(files):
+# Get hit/miss counts for each type for the given caches
+def get_cache_stats(files, caches):
     parsers = broadcast(
         read_file(*trace_file_pat),
         read_file(*cache_stats_pat)
     )
 
-    base_result = dict(parse_file(parsers, f) for f in unpack(args.base))
-    return pd.concat(base_result.values(), keys=base_result.keys(), names=['trace','name'])
+    base_result = dict(parse_file(parsers, f) for f in unpack(files))
+    cache_idx = (slice(None), caches)
+    return pd.concat(base_result.values(), keys=base_result.keys(), names=['trace','name']).loc[cache_idx, :]
+
+# Calculate the baseline and improved data for a given data point
+def get_base_test_pair(func, bases, files):
+    prefix = os.path.commonpath(files)
+    run_names = [os.path.relpath(f, prefix) for f in files]
+
+    base = func(bases)
+    test = pd.concat((func((f,)) for f in files), axis=1, keys=run_names)
+
+    return base, test
+
+# Calculate the speedup
+def get_speedup(bases, *test_files):
+    base_ipc, test_ipc = get_base_test_pair(get_ipc, bases, test_files)
+    return test_ipc.div(base_ipc, axis=0, level=0)
+
+# Calculate the percent change in cache accesses
+def get_pct_cache_change(caches, bases, *test_files):
+    base_result, test_result = get_base_test_pair(lambda x : get_cache_stats(x, caches), bases, test_files)
+
+    num = test_result.stack([1,2])                                   # Move hit/miss and type to index
+                     .sub(base_result.stack([0,1]), axis=0, level=0) # Subtract, broadcasting along test groups
+    denom = base_result.sum(level=0)
+                       .stack([0,1])
+    return num.unstack(1).div(denom, axis=0, level=0).unstack([1,2])
+
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
@@ -113,23 +142,15 @@ if __name__ == '__main__':
     argparser.add_argument('--cache', action='append')
     args = argparser.parse_args()
 
-    prefix = os.path.commonpath(args.files)
-    files = [(os.path.relpath(f, prefix), f) for f in args.files]
-
     if args.speedup:
-        base_ipc = get_ipc(args.base)
-        test_ipc = get_ipc(args.files)
-
         if args.output is not None:
-            test_ipc.div(base_ipc).to_csv(args.output)
+            get_speedup(args.base, *args.files).to_csv(args.output)
         else:
-            print(test_ipc/base_ipc)
+            print(get_speedup(args.base, *args.files))
 
     if args.cache is not None:
-        base_result = get_cache_stats(args.base).loc[(slice(None), args.cache), :]
-        test_result = get_cache_stats(args.files).loc[(slice(None), args.cache), :]
-
-        print(test_result - base_result)
-        print(base_result.sum(level=0))
-        print((test_result - base_result)/base_result.sum(level=0))
+        if args.output is not None:
+            get_pct_cache_change(args.base, *args.files).to_csv(args.output)
+        else:
+            print(get_pct_cache_change(args.base, *args.files))
 
