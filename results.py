@@ -7,6 +7,7 @@ import os
 import glob
 
 import pandas as pd
+from scipy.stats import gmean
 
 trace_file_pat = (
         re.compile(r'^CPU (?P<index>\d+) runs (?P<tracename>[-./\w\d]+)$'),
@@ -100,8 +101,13 @@ def get_cache_stats(files, caches):
     )
 
     base_result = dict(parse_file(parsers, f) for f in unpack(files))
-    cache_idx = (slice(None), caches)
-    return pd.concat(base_result.values(), keys=base_result.keys(), names=['trace','name']).loc[cache_idx, :]
+    result = pd.concat(base_result.values(), keys=base_result.keys(), names=['trace','name'])
+    if len(caches) > 0:
+        # Slice along the "name" index
+        cache_idx = [slice(None)]*len(result.index.names)
+        cache_idx[result.index.names.index('name')] = caches
+        result = result.loc[tuple(cache_idx), :]
+    return result
 
 # Calculate the baseline and improved data for a given data point
 def get_base_test_pair(func, bases, files):
@@ -118,14 +124,22 @@ def get_speedup(bases, *test_files):
     base_ipc, test_ipc = get_base_test_pair(get_ipc, bases, test_files)
     return test_ipc.div(base_ipc, axis=0, level=0)
 
-# Calculate the percent change in cache accesses
-def get_pct_cache_change(caches, bases, *test_files):
+def get_diff_cache_change(bases, *test_files, caches = []):
     base_result, test_result = get_base_test_pair(lambda x : get_cache_stats(x, caches), bases, test_files)
+    return (test_result
+             .stack([1,2])                                   # Move hit/miss and type to index
+             .sub(base_result.stack([0,1]), axis=0, level=0) # Subtract, broadcasting along test groups
+           )
 
-    num = test_result.stack([1,2])                                   # Move hit/miss and type to index
-                     .sub(base_result.stack([0,1]), axis=0, level=0) # Subtract, broadcasting along test groups
-    denom = base_result.sum(level=0)
-                       .stack([0,1])
+# Calculate the percent change in cache accesses
+def get_pct_cache_change(bases, *test_files, caches = []):
+    num = get_diff_cache_change(bases, *test_files, caches=caches)
+
+    base_result, _ = get_base_test_pair(lambda x : get_cache_stats(x, caches), bases, test_files)
+    denom = (base_result
+              .sum(level=0)
+              .stack([0,1])
+            )
     return num.unstack(1).div(denom, axis=0, level=0).unstack([1,2])
 
 
@@ -147,10 +161,13 @@ if __name__ == '__main__':
             get_speedup(args.base, *args.files).to_csv(args.output)
         else:
             print(get_speedup(args.base, *args.files))
+            #print(gmean(get_speedup(args.base, *args.files)))
 
     if args.cache is not None:
         if args.output is not None:
-            get_pct_cache_change(args.base, *args.files).to_csv(args.output)
+            #get_pct_cache_change(args.base, *args.files, caches=args.cache).to_csv(args.output)
+            get_diff_cache_change(args.base, *args.files, caches=args.cache).to_csv(args.output)
         else:
-            print(get_pct_cache_change(args.base, *args.files))
+            #print(get_pct_cache_change(args.base, *args.files, caches=args.cache))
+            print(get_diff_cache_change(args.base, *args.files, caches=args.cache))
 

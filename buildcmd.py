@@ -8,10 +8,13 @@ import functools
 
 def outfilename(output_directory, *trace_files):
     crunch_names = tuple(os.path.splitext(os.path.splitext(os.path.split(tf)[1])[0])[0] for tf in trace_files)
-    return os.path.join(output_directory, '-'.join(crunch_names) + '.txt')
+    return os.path.abspath(os.path.join(output_directory, '-'.join(crunch_names) + '.txt'))
+
+def expand(fname):
+    yield from glob.iglob(os.path.abspath(os.path.expanduser(os.path.expandvars(fname))))
 
 def unpack(elements):
-    for elem in itertools.chain.from_iterable(map(glob.iglob, elements)):
+    for elem in itertools.chain.from_iterable(map(expand, elements)):
         if os.path.isfile(elem):
             yield elem
         else:
