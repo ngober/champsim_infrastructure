@@ -25,15 +25,31 @@ def sample_iter(population, k):
     while True: # islice this generator
         yield random.sample(population, k)
 
+def buildcmd_iter(executable, output_prefix, population, warmup, simulation):
+    yield from ((*x, p, warmup, simulation) for x,p in itertools.product(zip(executable, output_prefix), population))
+
+def sh_out(cmd_iter):
+    return '\n'.join('"{executable}" -w{warmup} -i{simulation} "{traces}" > "{output_file}"'.format(
+            executable=champsim_executable,
+            warmup=warmup,
+            simulation=simulation,
+            traces='" "'.join(trace_file),
+            output_file=outfilename(output_prefix, *trace_file)
+        ) for champsim_executable, output_prefix, trace_file, warmup, simulation in cmd_iter)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Creates a sequence of execution commands for using ChampSim on a compute cluster")
 
-    parser.add_argument('--champsim-executable', action='append',
+    parser.add_argument('--format', choices=['sh'], default='sh',
+            help='The format of the resulting output.')
+
+    parser.add_argument('--champsim-executable', action='append', required=True,
             help='The ChampSim executable to run. When specified multiple times, zips together with --output-prefix and runs once for each trace in the population')
     parser.add_argument('--output-prefix', action='append',
             help='The output directory where the results will be written.')
 
-    parser.add_argument('--trace-prefix', action='append',
+    parser.add_argument('--trace-prefix', action='append', required=True,
             help='The location of traces that comprise the population. When specified multiple times, all populations are merged.')
 
     parser.add_argument('-n', type=int,
@@ -56,10 +72,8 @@ if __name__ == '__main__':
     else:
         population = map(lambda x: list((x,)), population)
 
+    cmd_iter = buildcmd_iter(args.champsim_executable, args.output_prefix or ['.'], itertools.islice(population, size), args.warmup_instructions, args.simulation_instructions)
 
-    div = '" "' # The separator for file names
-    for x,trace_file in itertools.product(zip(args.champsim_executable, args.output_prefix), itertools.islice(population, size)):
-        champsim_executable, output_prefix = x
-        output_file = outfilename(output_prefix, *trace_file)
-        print(f'"{champsim_executable}" -w{args.warmup_instructions} -i{args.simulation_instructions} "{div.join(trace_file)}" > "{output_file}"')
+    if args.format is 'sh':
+        print(sh_out(cmd_iter))
 
