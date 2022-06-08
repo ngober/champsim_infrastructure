@@ -5,6 +5,8 @@ import random
 import argparse
 import itertools
 import functools
+import json
+import re
 
 def outfilename(output_directory, *trace_files):
     crunch_names = tuple(os.path.splitext(os.path.splitext(os.path.split(tf)[1])[0])[0] for tf in trace_files)
@@ -13,13 +15,17 @@ def outfilename(output_directory, *trace_files):
 def expand(fname):
     yield from glob.iglob(os.path.abspath(os.path.expanduser(os.path.expandvars(fname))))
 
-def unpack(elements):
-    for elem in itertools.chain.from_iterable(map(expand, elements)):
-        if os.path.isfile(elem):
-            yield elem
-        else:
-            for b,_,f in os.walk(elem):
-                yield from (os.path.join(b,t) for t in f)
+def unpack(elem, recursive):
+    if os.path.isfile(elem):
+        yield elem
+    else:
+        it = os.walk(elem)
+        if not recursive:
+            it = itertools.islice(it, 1)
+
+        for b,_,f in it:
+            yield from (os.path.join(b,t) for t in f)
+
 
 def sample_iter(population, k):
     while True: # islice this generator
@@ -37,6 +43,42 @@ def sh_out(cmd_iter):
             output_file=outfilename(output_prefix, *trace_file)
         ) for champsim_executable, output_prefix, trace_file, warmup, simulation in cmd_iter)
 
+def get_population(population, n=None, k=1):
+    population = itertools.permutations(population, k)
+    if n is None:
+        yield from population
+    else:
+        yield from random.sample(population, n)
+
+def impl_get_population_part(directory, match='.*', recursive=True, invert_match=False):
+    reg = re.compile(match)
+
+    if invert_match:
+        f = lambda x: not reg.search(x)
+    else:
+        f = reg.search
+
+    for d in expand(directory):
+        yield from filter(f, unpack(d, recursive))
+
+def get_population_part(elem):
+    if isinstance(elem, dict):
+        return impl_get_population_part(**elem)
+    else:
+        return impl_get_population_part(elem)
+
+def parse_json(f):
+    if not isinstance(f,list):
+        f = list((f,))
+    for record in f:
+        population = itertools.chain.from_iterable(map(get_population_part, record['population']))
+        for p in get_population(population, k=record.get('choose_k', 1)):
+            yield record['executable'], record.get('output_prefix', '.'), p, record.get('warmup_instructions', 40000000), record.get('simulation_instructions', 1000000000)
+
+def parse_file(fname):
+    with open(fname, 'rt') as rfp:
+        f = json.load(rfp)
+    yield from parse_json(f)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Creates a sequence of execution commands for using ChampSim on a compute cluster")
@@ -44,36 +86,15 @@ if __name__ == '__main__':
     parser.add_argument('--format', choices=['sh'], default='sh',
             help='The format of the resulting output.')
 
-    parser.add_argument('--champsim-executable', action='append', required=True,
-            help='The ChampSim executable to run. When specified multiple times, zips together with --output-prefix and runs once for each trace in the population')
-    parser.add_argument('--output-prefix', action='append',
-            help='The output directory where the results will be written.')
-
-    parser.add_argument('--trace-prefix', action='append', required=True,
-            help='The location of traces that comprise the population. When specified multiple times, all populations are merged.')
-
-    parser.add_argument('-n', type=int,
-            help='The size of the population to use. Defaults to all traces found')
-
-    parser.add_argument('-k', type=int, default=1,
-            help='The number of traces to use per simulation. If k > 1 and n is specified, the traces will be randomly selected')
-
-    parser.add_argument('--warmup-instructions', type=int, default=400000000)
-    parser.add_argument('--simulation-instructions', type=int, default=1000000000)
+    parser.add_argument('files', nargs='+',
+            help='JSON files describing the build')
 
     args = parser.parse_args()
 
-    population = tuple(unpack(args.trace_prefix))
-
-    size = args.n or (len(population) * args.k)
-
-    if (args.k > 1):
-        population = sample_iter(population, k=args.k)
-    else:
-        population = map(lambda x: list((x,)), population)
-
-    cmd_iter = buildcmd_iter(args.champsim_executable, args.output_prefix or ['.'], itertools.islice(population, size), args.warmup_instructions, args.simulation_instructions)
+    cmd_iter = itertools.chain.from_iterable(map(parse_file, args.files))
 
     if args.format is 'sh':
-        print(sh_out(cmd_iter))
+        output = sh_out(cmd_iter)
+
+    print(output)
 
