@@ -5,6 +5,7 @@ import random
 import argparse
 import itertools
 import functools
+import operator
 import json
 import re
 
@@ -44,11 +45,13 @@ def sh_out(cmd_iter):
         ) for champsim_executable, output_prefix, trace_file, warmup, simulation in cmd_iter)
 
 def get_population(population, n=None, k=1):
-    population = itertools.permutations(population, k)
     if n is None:
-        yield from population
+        yield from itertools.permutations(population, k)
     else:
-        yield from random.sample(population, n)
+        pop = tuple(population)
+        pop_size = functools.reduce(operator.mul, range(len(pop), len(pop)-k, -1))
+        targets = random.sample(range(pop_size), k=n)
+        yield from itertools.compress(itertools.permutations(pop, k), map(targets.__contains__, itertools.count()))
 
 def impl_get_population_part(directory, match='.*', recursive=True, invert_match=False):
     reg = re.compile(match)
@@ -71,9 +74,12 @@ def parse_json(f):
     if not isinstance(f,list):
         f = list((f,))
     for record in f:
-        population = itertools.chain.from_iterable(map(get_population_part, record['population']))
-        for p in get_population(population, k=record.get('choose_k', 1)):
-            yield record['executable'], record.get('output_prefix', '.'), p, record.get('warmup_instructions', 40000000), record.get('simulation_instructions', 1000000000)
+        if not isinstance(record['test'], list):
+            record['test'] = list((record['test'],))
+        population = get_population(list(itertools.chain.from_iterable(map(get_population_part, record['traces']))), n=record.get("count"), k=record.get('width', 1))
+        executables = ({'name': 'base', 'executable': record['base']}, *record['test'])
+        for e,p in itertools.product(executables, population):
+            yield e['executable'], os.path.join(record.get('output_prefix', '.'), e['name']), p, record.get('warmup_instructions', 40000000), record.get('simulation_instructions', 1000000000)
 
 def parse_file(fname):
     with open(fname, 'rt') as rfp:
@@ -93,8 +99,37 @@ if __name__ == '__main__':
 
     cmd_iter = itertools.chain.from_iterable(map(parse_file, args.files))
 
-    if args.format is 'sh':
+    if args.format == 'sh':
         output = sh_out(cmd_iter)
 
     print(output)
+
+schema = '''
+[
+  {
+    "base": "~/champsim/bin/champsim",
+    "test": [
+      {
+        "name": "test_a",
+        "executable": "~/champsim/bin/test_a/champsim"
+      },
+      {
+        "name": "test_b",
+        "executable": "~/champsim/bin/test_b/champsim"
+      }
+    ],
+
+    "traces": [
+      {
+        "directory": "~/traces/dpc3",
+        "match": "mcf",
+        "invert_match": true
+      }
+    ],
+
+    "count": 10,
+    "width": 4
+  }
+]
+'''
 
