@@ -14,7 +14,7 @@ def outfilename(output_directory, *trace_files):
     return os.path.abspath(os.path.join(output_directory, '-'.join(crunch_names) + '.txt'))
 
 def expand(fname):
-    yield from glob.iglob(os.path.abspath(os.path.expanduser(os.path.expandvars(fname))))
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(fname)))
 
 def unpack(elem, recursive):
     if os.path.isfile(elem):
@@ -61,7 +61,7 @@ def impl_get_population_part(directory, match='.*', recursive=True, invert_match
     else:
         f = reg.search
 
-    for d in expand(directory):
+    for d in glob.iglob(expand(directory)):
         yield from filter(f, unpack(d, recursive))
 
 def get_population_part(elem):
@@ -79,7 +79,7 @@ def parse_json(f):
         population = get_population(list(itertools.chain.from_iterable(map(get_population_part, record['traces']))), n=record.get("count"), k=record.get('width', 1))
         executables = ({'name': 'base', 'executable': record['base']}, *record['test'])
         for e,p in itertools.product(executables, population):
-            yield e['executable'], os.path.join(record.get('output_prefix', '.'), e['name']), p, record.get('warmup_instructions', 40000000), record.get('simulation_instructions', 1000000000)
+            yield expand(e['executable']), expand(os.path.join(record.get('output_prefix', '.'), e['name'])), p, record.get('warmup_instructions', 40000000), record.get('simulation_instructions', 1000000000)
 
 def parse_file(fname):
     with open(fname, 'rt') as rfp:
