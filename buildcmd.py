@@ -43,6 +43,47 @@ def sh_out(cmd_iter):
             output_file=outfilename(output_prefix, *trace_file)
         ) for champsim_executable, output_prefix, trace_file, warmup, simulation in cmd_iter)
 
+def py_out(cmd_iter):
+    return '''runs = [
+'''+',\n'.join('  '+str((outfilename(prefix, *traces), champsim_executable, '-w'+str(warmup), '-i'+str(simulation), *traces)) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)+'''
+]
+
+import subprocess, time, collections, os, multiprocessing, itertools
+from timeit import default_timer as timer
+from datetime import timedelta
+
+start = timer()
+def begin(fname, *args):
+    t = timer()
+    print('[', timedelta(seconds=t - start), ']', 'Start', *args)
+    os.makedirs(os.path.dirname(fname), exist_ok=True)
+    f = open(fname, 'wt')
+    return f, t, subprocess.Popen(args, stdout=f, stderr=f)
+
+def check_finish(f, t, p):
+    retval = p.poll()
+    if retval is not None:
+        f.close()
+        print('[', timedelta(seconds=timer() - t), ']', 'Completed', os.path.basename(p.args[0]), 'with exit code', retval)
+    return retval
+
+heartbeat_period = 15 # seconds
+num_cpus = multiprocessing.num_cpus()
+
+processargs = collections.deque(runs)
+active_processes = []
+while processargs or active_processes:
+    unfinished = [(check_finish(*p) is None) for p in active_processes]
+    active_processes = list(itertools.compress(active_processes, unfinished))
+
+    while processargs and len(active_processes) < num_cpus:
+        active_processes.append(begin(*processargs[0]))
+        processargs.popleft()
+
+    print('[', timedelta(seconds=timer() - start), ']', 'Running:', len(active_processes), 'Finished:', len(runs)-len(active_processes)-len(processargs))
+    time.sleep(heartbeat_period)
+'''
+
 def get_population(population, n=None, k=1):
     if n is None:
         yield from itertools.permutations(population, k)
@@ -91,7 +132,7 @@ def parse_file(fname):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Creates a sequence of execution commands for using ChampSim on a compute cluster")
 
-    parser.add_argument('--format', choices=['sh'], default='sh',
+    parser.add_argument('--format', choices=['sh','python'], default='sh',
             help='The format of the resulting output.')
 
     parser.add_argument('files', nargs='+',
@@ -103,6 +144,8 @@ if __name__ == '__main__':
 
     if args.format == 'sh':
         output = sh_out(cmd_iter)
+    if args.format == 'python':
+        output = py_out(cmd_iter)
 
     print(output)
 
