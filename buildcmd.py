@@ -27,7 +27,6 @@ def unpack(elem, recursive):
         for b,_,f in it:
             yield from (os.path.join(b,t) for t in f)
 
-
 def sample_iter(population, k):
     while True: # islice this generator
         yield random.sample(population, k)
@@ -72,14 +71,17 @@ def get_population_part(elem):
 
 def parse_json(f):
     if not isinstance(f,list):
-        f = list((f,))
+        f = [f]
     for record in f:
         if not isinstance(record['test'], list):
-            record['test'] = list((record['test'],))
-        population = get_population(list(itertools.chain.from_iterable(map(get_population_part, record['traces']))), n=record.get("count"), k=record.get('width', 1))
+            record['test'] = [record['test']]
+        population = get_population(list(itertools.chain(*map(get_population_part, record['traces']))), n=record.get("count"), k=record.get('width', 1))
         executables = ({'name': 'base', 'executable': record['base']}, *record['test'])
         for e,p in itertools.product(executables, population):
-            yield expand(e['executable']), expand(os.path.join(record.get('output_prefix', '.'), e['name'])), p, record.get('warmup_instructions', 40000000), record.get('simulation_instructions', 1000000000)
+            sim_instrs = record.get('simulation_instructions', 1000000000)
+            warm_instrs = record.get('warmup_instructions', int(0.2*sim_instrs))
+            output_prefix = expand(os.path.join(record.get('output_prefix', '.'), e['name'])) # create a subdirectory for results with the given name
+            yield expand(e['executable']), output_prefix, p, warm_instrs, sim_instrs
 
 def parse_file(fname):
     with open(fname, 'rt') as rfp:
@@ -97,7 +99,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    cmd_iter = itertools.chain.from_iterable(map(parse_file, args.files))
+    cmd_iter = itertools.chain(*map(parse_file, args.files))
 
     if args.format == 'sh':
         output = sh_out(cmd_iter)
