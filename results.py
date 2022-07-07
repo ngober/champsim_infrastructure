@@ -7,59 +7,82 @@ import os
 import glob
 
 import pandas as pd
+import matplotlib.pyplot as plt
 from scipy.stats import gmean
 
-trace_file_pat = (
-        re.compile(r'^CPU (?P<index>\d+) runs (?P<tracename>[-./\w\d]+)$'),
+class pattern:
+    def __init__(self, regex, matcher, aggregator):
+        self.regex = re.compile(regex)
+        self.matcher = matcher
+        self.aggregator = aggregator
+
+    # Return a functor over an iterable that matches each line, filters out Nones, projects the match, then aggregates
+    def __call__(self, rfp):
+        return self.aggregator(map(self.matcher, filter(None, map(lambda x: self.regex.match(x), rfp))))
+
+trace_file_pat = pattern(
+        r'^CPU (?P<index>\d+) runs (?P<tracename>[-./\w\d]+)$',
         lambda match: os.path.basename(match['tracename']),
-        functools.partial(functools.reduce, operator.concat)
+        lambda results: pd.DataFrame(results, columns=['trace_name'])
     )
 
-cpu_stats_pat = (
-        re.compile(r'^CPU (?P<cpu>\d+) cumulative IPC: \d+\.?\d* instructions: (?P<instructions>\d+) cycles: (?P<cycles>\d+)$'),
+cpu_stats_pat = pattern(
+        r'^CPU (?P<cpu>\d+) cumulative IPC: \d+\.?\d* instructions: (?P<instructions>\d+) cycles: (?P<cycles>\d+)$',
         operator.methodcaller('groupdict',0),
-        lambda results : pd.DataFrame.from_records(results, index=['cpu']).astype('int64')
+        lambda results : pd.DataFrame.from_records(results).astype('int64')
     )
 
-cache_stats_pat = (
-        re.compile(r'^(?P<name>\S+) (?P<type>LOAD|RFO|PREFETCH|TRANSLATION)\s+ACCESS:\s+\d+  HIT:\s+(?P<hit>\d+)  MISS:\s+(?P<miss>\d+)$'),
-        operator.methodcaller('groupdict',0),
-        lambda results : pd.DataFrame.from_records(results).pivot(index='name', columns='type', values=['hit', 'miss']).astype('int64')
+def settle(it):
+    cpu_num = itertools.count()
+    retval = []
+    chunk = {}
+    for k,v in it:
+        if k in chunk:
+            #retval['cpu' + str(next(cpu_num))] = dict(itertools.chain.from_iterable((((k, 'hit'), v['hit']), ((k, 'miss'), v['miss'])) for k,v in chunk.items()))
+            retval.append(dict(itertools.chain.from_iterable(((k+'_hit', v['hit']), (k+'_miss', v['miss'])) for k,v in chunk.items()), cpu=next(cpu_num)))
+            chunk = {}
+        chunk.update({k: { 'hit': v[0], 'miss': v[1] }})
+    retval = pd.DataFrame(retval).fillna(0)
+    retval['TOTAL_hit'] = retval[[c for c in retval.columns if not c.startswith('PREFETCH') and c.endswith('hit')]].sum(axis=1)
+    retval['TOTAL_miss'] = retval[[c for c in retval.columns if not c.startswith('PREFETCH') and c.endswith('miss')]].sum(axis=1)
+    return retval
+
+def cache_stats_pat(cache):
+    return pattern(
+        '^' + cache + r' (?P<type>LOAD|RFO|PREFETCH|WRITEBACK|TRANSLATION)\s+ACCESS:\s+\d+  HIT:\s+(?P<hit>\d+)  MISS:\s+(?P<miss>\d+)$',
+        lambda m: (m['type'], (int(m['hit']), int(m['miss']))),
+        lambda results : settle(results)
     )
 
-pref_stats_pat = (
-        re.compile(r'^(\S+) PREFETCH  REQUESTED:\s+(\d+)  ISSUED:\s+(\d+)  USEFUL:\s+(\d+)  USELESS:\s+(\d+)$'),
+pref_stats_pat = pattern(
+        r'^(\S+) PREFETCH  REQUESTED:\s+(\d+)  ISSUED:\s+(\d+)  USEFUL:\s+(\d+)  USELESS:\s+(\d+)$',
         lambda m : print('AMAT', m.groups),
         lambda _: None
     )
 
-amat_pat = (
-        re.compile(r'^(\S+) AVERAGE MISS LATENCY: (\d+\.?\d*) cycles$'),
+amat_pat = pattern(
+        r'^(\S+) AVERAGE MISS LATENCY: (\d+\.?\d*) cycles$',
         lambda m : print('AMAT', m.groups),
         lambda _: None
     )
 
-dram_rq_pat = (
-        re.compile(r'^ RQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+)$'),
+dram_rq_pat = pattern(
+        r'^ RQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+)$',
         lambda m : print('DRAM', m.groups),
         lambda _: None
     )
 
-dram_wq_pat = (
-        re.compile(r'^ WQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+)  FULL:\s+(\d+)$'),
+dram_wq_pat = pattern(
+        r'^ WQ ROW_BUFFER_HIT:\s+(\d+)  ROW_BUFFER_MISS:\s+(\d+)  FULL:\s+(\d+)$',
         lambda m : print('DRAM', m.groups),
         lambda _: None
     )
 
-dram_dbus_pat = (
-        re.compile(r'^ DBUS AVG_CONGESTED_CYCLE:\s+(\d+\.?\d*)$'),
+dram_dbus_pat = pattern(
+        r'^ DBUS AVG_CONGESTED_CYCLE:\s+(\d+\.?\d*)$',
         lambda m : print('DRAM', m.groups),
         lambda _: None
     )
-
-# Return a functor over an iterable that matches each line, filters out Nones, projects the match, then aggregates
-def read_file(pat, proj, agg):
-    return lambda rfp : agg(map(proj, filter(None, map(lambda x: pat.match(x), rfp))))
 
 # Return a functor over an iterable that broadcasts the iterable over each functor passed to it
 # FIXME is there a way to do this without hoisting the entire file into memory? Does it matter?
@@ -69,105 +92,145 @@ def broadcast(*parsers):
 def expand(fname):
     return os.path.abspath(os.path.expanduser(os.path.expandvars(fname)))
 
-def unpack(elements):
-    for elem in map(expand, elements):
-        if os.path.isfile(elem):
-            yield elem
-        else:
-            for b,_,f in os.walk(elem):
-                yield from (os.path.join(b,t) for t in f)
+def unpack(elem):
+    elem = expand(elem)
+    if os.path.isfile(elem):
+        yield elem
+    else:
+        for b,_,f in os.walk(elem):
+            yield from (os.path.join(b,t) for t in f)
 
 # Parse the file with the given parsers
 def parse_file(parsers, fname):
     with open(fname) as rfp:
         return parsers(rfp)
 
+# Attach the cpu number to the column labels
+def collapse(record):
+    record.set_index('cpu')
+    record = record.unstack()
+    record.index = [x + '_' + str(y) for x,y in record.index]
+
+    return record
+
 # Get the instructions per cycle
-def get_ipc(files):
+def get_ipc(file):
     parsers = broadcast(
-        read_file(*trace_file_pat),
-        read_file(*cpu_stats_pat)
+        trace_file_pat,
+        cpu_stats_pat
     )
 
-    tracenames, results = zip(*(parse_file(parsers, f) for f in unpack(files)))
-    result = pd.concat(results, keys=tracenames, names=['trace','cpu'])
-    return result['instructions'] / result['cycles']
+    parse_result = parse_file(parsers, file)
+    parse_result = (parse_result[0], parse_result[1].iloc[:len(parse_result[0])]) # Select full-simulation stats. This is a hack and I hate it, but I need to improve ChampSim's output first
+    result = parse_result[0].join(parse_result[1]) # Join trace names to instruction and cycle counts
+    result['ipc'] = result['instructions'] / result['cycles']
+
+    return result
 
 # Get hit/miss counts for each type for the given caches
-def get_cache_stats(files, caches):
+def get_cache_stats(file, cache):
     parsers = broadcast(
-        read_file(*trace_file_pat),
-        read_file(*cache_stats_pat)
+        trace_file_pat,
+        cache_stats_pat(cache)
     )
 
-    base_result = dict(parse_file(parsers, f) for f in unpack(files))
-    result = pd.concat(base_result.values(), keys=base_result.keys(), names=['trace','name'])
-    if len(caches) > 0:
-        # Slice along the "name" index
-        cache_idx = [slice(None)]*len(result.index.names)
-        cache_idx[result.index.names.index('name')] = caches
-        result = result.loc[tuple(cache_idx), :]
+    parse_result = parse_file(parsers, file)
+    parse_result = (parse_result[0], parse_result[1].iloc[:len(parse_result[0])]) # Select full-simulation stats. This is a hack and I hate it, but I need to improve ChampSim's output first
+    result = parse_result[0].join(parse_result[1]) # Join trace names to instruction and cycle counts
+    result = collapse(result)
+    result['TOTAL_hit'] = result[[c for c in result.index if c.startswith('TOTAL_hit')]].sum()
+    result['TOTAL_miss'] = result[[c for c in result.index if c.startswith('TOTAL_miss')]].sum()
     return result
 
 # Calculate the baseline and improved data for a given data point
-def get_base_test_pair(func, bases, files):
-    prefix = os.path.commonpath(files)
-    run_names = [os.path.relpath(f, prefix) for f in files]
-
-    base = func(bases)
-    test = pd.concat((func((f,)) for f in files), axis=1, keys=run_names)
-
-    return base, test
+def get_base_test_pair(func, base_files, test_files):
+    return func(base_files), func(test_files)
 
 # Calculate the speedup
-def get_speedup(bases, *test_files):
-    base_ipc, test_ipc = get_base_test_pair(get_ipc, bases, test_files)
-    return test_ipc.div(base_ipc, axis=0, level=0)
+def get_speedup(bases, tests):
+    # Get IPC results
+    eval_func = lambda files: pd.DataFrame([collapse(get_ipc(f)) for f in files])
+    base_ipc, test_ipc = get_base_test_pair(eval_func, bases, tests)
 
-def get_diff_cache_change(bases, *test_files, caches = []):
-    base_result, test_result = get_base_test_pair(lambda x : get_cache_stats(x, caches), bases, test_files)
+    # Index by trace names
+    col_index_names = [c for c in test_ipc.columns if c.startswith('trace_name')]
+    base_ipc.set_index(col_index_names, inplace=True)
+    test_ipc.set_index(col_index_names, inplace=True)
+
+    # Divide
+    ipc_index_names = [c for c in test_ipc.columns if c.startswith('ipc')]
+    speedup = test_ipc[ipc_index_names].div(base_ipc[ipc_index_names])
+
+    # Name the columns something useful
+    speedup.columns = ['speedup_' + c.split('_')[-1] for c in speedup.columns]
+
+    return speedup
+
+def get_diff_cache_change(bases, tests, caches = []):
+    eval_func = lambda files: pd.DataFrame([collapse(get_cache_stats(f, caches)) for f in files])
+    base_result, test_result = get_base_test_pair(eval_func, bases, tests)
     return (test_result
              .stack([1,2])                                   # Move hit/miss and type to index
              .sub(base_result.stack([0,1]), axis=0, level=0) # Subtract, broadcasting along test groups
            )
 
 # Calculate the percent change in cache accesses
-def get_pct_cache_change(bases, *test_files, caches = []):
-    num = get_diff_cache_change(bases, *test_files, caches=caches)
+def get_pct_cache_change(bases, tests, cache):
+    eval_func = lambda files: pd.DataFrame([get_cache_stats(f, cache=cache) for f in files])
+    base_result, test_result = get_base_test_pair(eval_func, itertools.chain(*map(unpack, bases)), itertools.chain(*map(unpack, tests)))
 
-    base_result, _ = get_base_test_pair(lambda x : get_cache_stats(x, caches), bases, test_files)
-    denom = (base_result
-              .sum(level=0)
-              .stack([0,1])
-            )
-    return num.unstack(1).div(denom, axis=0, level=0).unstack([1,2])
+    col_index_names = [c for c in test_result.columns if c.startswith('trace_name')]
+    test_result.set_index(col_index_names, inplace=True)
+    base_result.set_index(col_index_names, inplace=True)
 
+    return test_result.div(base_result).reset_index()
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
 
     # File lists
-    argparser.add_argument('--base', action='append')
+    argparser.add_argument('--base', nargs='*')
     argparser.add_argument('files', nargs='+')
-    argparser.add_argument('-o', '--output', nargs='?')
+    argparser.add_argument('-o', '--output')
 
     # Data selectors
     argparser.add_argument('--speedup', action='store_true')
-    argparser.add_argument('--cache', action='append')
+    argparser.add_argument('--cache')
     args = argparser.parse_args()
 
     if args.speedup:
-        if args.output is not None:
-            get_speedup(args.base, *args.files).to_csv(args.output)
-        else:
-            print(get_speedup(args.base, *args.files))
-            #print(gmean(get_speedup(args.base, *args.files)))
+        eval_func = lambda files: pd.DataFrame([collapse(get_ipc(f)) for f in files])
+        #eval_func = lambda r: gmean(get_speedup(r))
 
-    if args.cache is not None:
-        if args.output is not None:
-            #get_pct_cache_change(args.base, *args.files, caches=args.cache).to_csv(args.output)
-            get_diff_cache_change(args.base, *args.files, caches=args.cache).to_csv(args.output)
+        test_results = eval_func(itertools.chain(*map(unpack, args.files)))
+
+        if args.base:
+            col_index_names = [c for c in test_results.columns if c.startswith('trace_name')]
+            test_results.set_index(col_index_names, inplace=True)
+
+            speedup = get_speedup(itertools.chain(*map(unpack, args.base)), itertools.chain(*map(unpack, args.files)))
+            test_results[speedup.columns] = speedup
+
+            test_results.reset_index(inplace=True)
+
+            if args.output is None:
+                test_results = test_results[[c for c in test_results.columns if c.startswith('speedup')]]-1
+                test_results.plot.bar(bottom=1, ylabel='Speedup')
+                plt.hlines(1, -1, len(test_results.index), colors='black')
+                plt.show()
+            else:
+                test_results.to_csv(args.output)
+
+    elif args.cache is not None:
+        if args.base:
+            test_results = get_pct_cache_change(args.base, args.files, args.cache)
+            axs = (test_results[['TOTAL_hit', 'TOTAL_miss']]-1).plot.bar(bottom=1, subplots=True, ylabel='Percent Change')
+            for ax in axs:
+                ax.hlines(1,-1, len(test_results.index), colors='black', linewidth=1)
+            plt.show()
         else:
-            #print(get_pct_cache_change(args.base, *args.files, caches=args.cache))
-            print(get_diff_cache_change(args.base, *args.files, caches=args.cache))
+            eval_func = lambda files: pd.DataFrame([get_cache_stats(f, cache=args.cache) for f in files])
+            test_results = eval_func(itertools.chain(*map(unpack, args.files)))
+
+    print(test_results)
 
