@@ -125,7 +125,7 @@ def get_ipc(file):
     result = parse_result[0].join(parse_result[1]) # Join trace names to instruction and cycle counts
     result['ipc'] = result['instructions'] / result['cycles']
 
-    return result
+    return collapse(result)
 
 # Get hit/miss counts for each type for the given caches
 def get_cache_stats(file, cache):
@@ -146,11 +146,13 @@ def get_cache_stats(file, cache):
 def get_base_test_pair(func, base_files, test_files):
     return func(base_files), func(test_files)
 
+def get_records(func):
+    return lambda files: pd.DataFrame([func(f) for f in files])
+
 # Calculate the speedup
 def get_speedup(bases, tests):
     # Get IPC results
-    eval_func = lambda files: pd.DataFrame([collapse(get_ipc(f)) for f in files])
-    base_ipc, test_ipc = get_base_test_pair(eval_func, bases, tests)
+    base_ipc, test_ipc = get_base_test_pair(get_records(get_ipc), itertools.chain(*map(unpack, bases)), itertools.chain(*map(unpack, tests)))
 
     # Index by trace names
     col_index_names = [c for c in test_ipc.columns if c.startswith('trace_name')]
@@ -162,28 +164,29 @@ def get_speedup(bases, tests):
     speedup = test_ipc[ipc_index_names].div(base_ipc[ipc_index_names])
 
     # Name the columns something useful
-    speedup.columns = ['speedup_' + c.split('_')[-1] for c in speedup.columns]
+    speedup.columns = ['Core ' + c.split('_')[-1] for c in speedup.columns]
 
     return speedup
 
-def get_diff_cache_change(bases, tests, caches = []):
-    eval_func = lambda files: pd.DataFrame([collapse(get_cache_stats(f, caches)) for f in files])
-    base_result, test_result = get_base_test_pair(eval_func, bases, tests)
-    return (test_result
-             .stack([1,2])                                   # Move hit/miss and type to index
-             .sub(base_result.stack([0,1]), axis=0, level=0) # Subtract, broadcasting along test groups
-           )
+def get_diff_cache_change(bases, tests, cache):
+    eval_func = get_records(functools.partial(get_cache_stats(cache)))
+
+    col_index_names = [c for c in test_result.columns if c.startswith('trace_name')]
+    test_result.set_index(col_index_names, inplace=True)
+    base_result.set_index(col_index_names, inplace=True)
+
+    return test_result.sub(base_result)
 
 # Calculate the percent change in cache accesses
 def get_pct_cache_change(bases, tests, cache):
-    eval_func = lambda files: pd.DataFrame([get_cache_stats(f, cache=cache) for f in files])
+    eval_func = get_records(functools.partial(get_cache_stats, cache=cache))
     base_result, test_result = get_base_test_pair(eval_func, itertools.chain(*map(unpack, bases)), itertools.chain(*map(unpack, tests)))
 
     col_index_names = [c for c in test_result.columns if c.startswith('trace_name')]
     test_result.set_index(col_index_names, inplace=True)
     base_result.set_index(col_index_names, inplace=True)
 
-    return test_result.div(base_result).reset_index()
+    return test_result.div(base_result)
 
 if __name__ == '__main__':
     argparser = argparse.ArgumentParser()
@@ -199,27 +202,17 @@ if __name__ == '__main__':
     args = argparser.parse_args()
 
     if args.speedup:
-        eval_func = lambda files: pd.DataFrame([collapse(get_ipc(f)) for f in files])
-        #eval_func = lambda r: gmean(get_speedup(r))
-
-        test_results = eval_func(itertools.chain(*map(unpack, args.files)))
-
         if args.base:
-            col_index_names = [c for c in test_results.columns if c.startswith('trace_name')]
-            test_results.set_index(col_index_names, inplace=True)
-
-            speedup = get_speedup(itertools.chain(*map(unpack, args.base)), itertools.chain(*map(unpack, args.files)))
-            test_results[speedup.columns] = speedup
-
-            test_results.reset_index(inplace=True)
+            speedup = get_speedup(args.base, args.files)
 
             if args.output is None:
-                test_results = test_results[[c for c in test_results.columns if c.startswith('speedup')]]-1
-                test_results.plot.bar(bottom=1, ylabel='Speedup')
-                plt.hlines(1, -1, len(test_results.index), colors='black')
+                (speedup-1).plot.bar(bottom=1, ylabel='Speedup')
+                plt.hlines(1, -1, len(speedup.index), colors='black')
                 plt.show()
             else:
-                test_results.to_csv(args.output)
+                speedup.to_csv(args.output)
+        else:
+            print(get_records(get_ipc)(itertools.chain(*map(unpack, args.files))))
 
     elif args.cache is not None:
         if args.base:
@@ -232,5 +225,5 @@ if __name__ == '__main__':
             eval_func = lambda files: pd.DataFrame([get_cache_stats(f, cache=args.cache) for f in files])
             test_results = eval_func(itertools.chain(*map(unpack, args.files)))
 
-    print(test_results)
+            print(test_results)
 
