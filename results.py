@@ -29,7 +29,7 @@ trace_file_pat = pattern(
 cpu_stats_pat = pattern(
         r'^CPU (?P<cpu>\d+) cumulative IPC: \d+\.?\d* instructions: (?P<instructions>\d+) cycles: (?P<cycles>\d+)$',
         operator.methodcaller('groupdict',0),
-        lambda results : pd.DataFrame.from_records(results).astype('int64')
+        lambda results : pd.DataFrame.from_records(results, columns=['cpu', 'instructions', 'cycles']).astype('int64')
     )
 
 def settle(it):
