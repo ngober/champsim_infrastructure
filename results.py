@@ -42,7 +42,7 @@ def settle(it):
             retval.append(dict(itertools.chain.from_iterable(((k+'_hit', v['hit']), (k+'_miss', v['miss'])) for k,v in chunk.items()), cpu=next(cpu_num)))
             chunk = {}
         chunk.update({k: { 'hit': v[0], 'miss': v[1] }})
-    retval = pd.DataFrame(retval).fillna(0)
+    retval = pd.DataFrame(retval, columns=['LOAD_hit', 'LOAD_miss', 'RFO_hit', 'RFO_miss', 'PREFETCH_hit', 'PREFETCH_miss', 'WRITEBACK_hit', 'WRITEBACK_miss', 'TRANSLATION_hit', 'TRANSLATION_miss']).fillna(0)
     retval['TOTAL_hit'] = retval[[c for c in retval.columns if not c.startswith('PREFETCH') and c.endswith('hit')]].sum(axis=1)
     retval['TOTAL_miss'] = retval[[c for c in retval.columns if not c.startswith('PREFETCH') and c.endswith('miss')]].sum(axis=1)
     return retval
@@ -54,10 +54,11 @@ def cache_stats_pat(cache):
         lambda results : settle(results)
     )
 
-pref_stats_pat = pattern(
-        r'^(\S+) PREFETCH  REQUESTED:\s+(\d+)  ISSUED:\s+(\d+)  USEFUL:\s+(\d+)  USELESS:\s+(\d+)$',
-        lambda m : print('AMAT', m.groups),
-        lambda _: None
+def pref_stats_pat(cache):
+    return pattern(
+        '^' + cache + r' PREFETCH  REQUESTED:\s+(?P<prefetch_requested>\d+)  ISSUED:\s+(?P<prefetch_issued>\d+)  USEFUL:\s+(?P<prefetch_useful>\d+)  USELESS:\s+(?P<prefetch_useless>\d+)$',
+        operator.methodcaller('groupdict',0),
+        lambda results : pd.DataFrame.from_records(results, columns=['prefetch_requested', 'prefetch_issued', 'prefetch_useful', 'prefetch_useless']).astype('int64')
     )
 
 amat_pat = pattern(
@@ -131,13 +132,14 @@ def get_ipc(file):
 def get_cache_stats(file, cache):
     parsers = broadcast(
         trace_file_pat,
-        cache_stats_pat(cache)
+        cache_stats_pat(cache),
+        pref_stats_pat(cache)
     )
 
     parse_result = parse_file(parsers, file)
-    parse_result = (parse_result[0], parse_result[1].iloc[:len(parse_result[0])]) # Select full-simulation stats. This is a hack and I hate it, but I need to improve ChampSim's output first
+    parse_result = (parse_result[0], parse_result[1].iloc[:len(parse_result[0])], parse_result[2].iloc[0]) # Select full-simulation stats. This is a hack and I hate it, but I need to improve ChampSim's output first
     result = parse_result[0].join(parse_result[1]) # Join trace names to instruction and cycle counts
-    result = collapse(result)
+    result = pd.concat([collapse(result), parse_result[2]])
     result['TOTAL_hit'] = result[[c for c in result.index if c.startswith('TOTAL_hit')]].sum()
     result['TOTAL_miss'] = result[[c for c in result.index if c.startswith('TOTAL_miss')]].sum()
     return result
@@ -169,7 +171,8 @@ def get_speedup(bases, tests):
     return speedup
 
 def get_diff_cache_change(bases, tests, cache):
-    eval_func = get_records(functools.partial(get_cache_stats(cache)))
+    eval_func = get_records(functools.partial(get_cache_stats, cache=cache))
+    base_result, test_result = get_base_test_pair(eval_func, itertools.chain(*map(unpack, bases)), itertools.chain(*map(unpack, tests)))
 
     col_index_names = [c for c in test_result.columns if c.startswith('trace_name')]
     test_result.set_index(col_index_names, inplace=True)
