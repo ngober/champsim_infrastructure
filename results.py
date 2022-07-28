@@ -137,9 +137,18 @@ def get_cache_stats(file, cache):
     )
 
     parse_result = parse_file(parsers, file)
-    parse_result = (parse_result[0], parse_result[1].iloc[:len(parse_result[0])], parse_result[2].iloc[0]) # Select full-simulation stats. This is a hack and I hate it, but I need to improve ChampSim's output first
+    print(parse_result[2])
+    parse_result = (parse_result[0], parse_result[1], parse_result[2].iloc[0] if not parse_result[2].empty else pd.Series(index=parse_result[2].columns))
+    parse_result = (parse_result[0], parse_result[1].iloc[:len(parse_result[0])], parse_result[2]) # Select full-simulation stats. This is a hack and I hate it, but I need to improve ChampSim's output first
     result = parse_result[0].join(parse_result[1]) # Join trace names to instruction and cycle counts
-    result = pd.concat([collapse(result), parse_result[2]])
+
+    # manually collapse
+    result = result.unstack()
+    result.index = [x + '_' + str(y) for x,y in result.index]
+
+    print(result)
+    print(parse_result[2])
+    result = pd.concat([result, parse_result[2]])
     result['TOTAL_hit'] = result[[c for c in result.index if c.startswith('TOTAL_hit')]].sum()
     result['TOTAL_miss'] = result[[c for c in result.index if c.startswith('TOTAL_miss')]].sum()
     return result
