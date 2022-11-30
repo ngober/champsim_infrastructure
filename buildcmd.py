@@ -9,9 +9,11 @@ import operator
 import json
 import re
 
-def outfilename(output_directory, *trace_files):
-    crunch_names = tuple(os.path.splitext(os.path.splitext(os.path.split(tf)[1])[0])[0] for tf in trace_files)
-    return os.path.abspath(os.path.join(output_directory, '-'.join(crunch_names) + '.txt'))
+def out_id(*trace_files):
+    return '-'.join(os.path.splitext(os.path.splitext(os.path.split(tf)[1])[0])[0] for tf in trace_files)
+
+def out_file(output_directory, build_id):
+    return os.path.abspath(os.path.join(output_directory, build_id))
 
 def expand(fname):
     return os.path.abspath(os.path.expanduser(os.path.expandvars(fname)))
@@ -34,18 +36,23 @@ def sample_iter(population, k):
 def buildcmd_iter(executable, output_prefix, population, warmup, simulation):
     yield from ((*x, p, warmup, simulation) for x,p in itertools.product(zip(executable, output_prefix), population))
 
-def sh_out(cmd_iter):
-    return '\n'.join('"{executable}" -w{warmup} -i{simulation} "{traces}" > "{output_file}"'.format(
+def sh_out(cmd_iter, use_json=False):
+    fstring = 'mkdir -p "{output_prefix}"; "{executable}" -w{warmup} -i{simulation} -- "{traces}" > "{output_file}.txt"'
+    if use_json:
+        fstring = 'mkdir -p "{output_prefix}"; "{executable}" -w{warmup} -i{simulation} --json="{json_file}.json" -- "{traces}" > "{output_file}.txt"'
+    return '\n'.join(fstring.format(
             executable=champsim_executable,
             warmup=warmup,
             simulation=simulation,
             traces='" "'.join(trace_file),
-            output_file=outfilename(output_prefix, *trace_file)
+            output_prefix=output_prefix,
+            json_file=out_file(output_prefix, out_id(*trace_file)),
+            output_file=out_file(output_prefix, out_id(*trace_file))
         ) for champsim_executable, output_prefix, trace_file, warmup, simulation in cmd_iter)
 
 def py_out(cmd_iter):
     return '''runs = [
-'''+',\n'.join('  '+str((outfilename(prefix, *traces), champsim_executable, '-w'+str(warmup), '-i'+str(simulation), *traces)) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)+'''
+'''+',\n'.join('  '+str((out_file(prefix, out_id(*traces)) + '.txt', champsim_executable, '-w'+str(warmup), '-i'+str(simulation), *traces)) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)+'''
 ]
 
 import subprocess, time, collections, os, multiprocessing, itertools
@@ -135,6 +142,9 @@ if __name__ == '__main__':
     parser.add_argument('--format', choices=['sh','python'], default='sh',
             help='The format of the resulting output.')
 
+    parser.add_argument('--use-json', default=False, action='store_true',
+            help='The format of the resulting output.')
+
     parser.add_argument('files', nargs='+',
             help='JSON files describing the build')
 
@@ -143,7 +153,7 @@ if __name__ == '__main__':
     cmd_iter = itertools.chain(*map(parse_file, args.files))
 
     if args.format == 'sh':
-        output = sh_out(cmd_iter)
+        output = sh_out(cmd_iter, args.use_json)
     if args.format == 'python':
         output = py_out(cmd_iter)
 
