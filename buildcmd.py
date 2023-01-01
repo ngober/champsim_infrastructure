@@ -131,14 +131,17 @@ def get_population_part(elem):
     else:
         return impl_get_population_part(elem)
 
+def wrap_list(x):
+    if not isinstance(x,list):
+        return [x]
+    else:
+        return x
+
 def parse_json(f):
-    if not isinstance(f,list):
-        f = [f]
-    for record in f:
-        if not isinstance(record['test'], list):
-            record['test'] = [record['test']]
-        population = get_population(list(itertools.chain(*map(get_population_part, record['traces']))), n=record.get("count"), k=record.get('width', 1))
-        executables = ({'name': 'base', 'executable': record['base']}, *record['test'])
+    for record in wrap_list(f):
+        population = get_population(itertools.chain(*map(get_population_part, record['traces'])), n=record.get("count"), k=record.get('width', 1))
+        executables = ({'name': 'base', 'executable': record['base']}, *wrap_list(record.get('test', [])))
+
         for e,p in itertools.product(executables, population):
             sim_instrs = record.get('simulation_instructions', 1000000000)
             warm_instrs = record.get('warmup_instructions', int(0.2*sim_instrs))
