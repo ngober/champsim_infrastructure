@@ -11,7 +11,7 @@ import re
 
 def outfilename(output_directory, *trace_files):
     crunch_names = tuple(os.path.splitext(os.path.splitext(os.path.split(tf)[1])[0])[0] for tf in trace_files)
-    return os.path.abspath(os.path.join(output_directory, '-'.join(crunch_names) + '.txt'))
+    return os.path.abspath(os.path.join(output_directory, '-'.join(crunch_names)))
 
 def expand(fname):
     return os.path.abspath(os.path.expanduser(os.path.expandvars(fname)))
@@ -27,15 +27,35 @@ def unpack(elem, recursive):
         for b,_,f in it:
             yield from (os.path.join(b,t) for t in f)
 
-def sample_iter(population, k):
-    while True: # islice this generator
-        yield random.sample(population, k)
+#def sample_iter(population, k):
+    #results = []
+    #it = iter(population)
+    #for _ in range(k):
+        #results.append(next(it))
+    #random.shuffle(results)
+    #for i, v in enumerate(it, k):
+        #r = random.randint(0,i)
+        #if r < k:
+            #results[r] = v
+    #return results
+
+def sample_iter(population, n, k):
+    results = set()
+    while len(results) < n:
+        random.shuffle(population)
+        results.add(tuple(population[:k]))
+    return list(results)
 
 def buildcmd_iter(executable, output_prefix, population, warmup, simulation):
     yield from ((*x, p, warmup, simulation) for x,p in itertools.product(zip(executable, output_prefix), population))
 
-def sh_out(cmd_iter):
-    return '\n'.join('"{executable}" -w{warmup} -i{simulation} "{traces}" > "{output_file}"'.format(
+def sh_out(cmd_iter, use_json=False):
+    if use_json:
+        fmtstr = 'mkdir -p $(dirname "{output_file}"); "{executable}" -w{warmup} -i{simulation} --json="{output_file}.json" -- "{traces}" > "{output_file}.stdout.txt"'
+    else:
+        fmtstr = 'mkdir -p $(dirname "{output_file}"); "{executable}" -w{warmup} -i{simulation} -- "{traces}" > "{output_file}.txt"'
+
+    return '\n'.join(fmtstr.format(
             executable=champsim_executable,
             warmup=warmup,
             simulation=simulation,
@@ -43,9 +63,13 @@ def sh_out(cmd_iter):
             output_file=outfilename(output_prefix, *trace_file)
         ) for champsim_executable, output_prefix, trace_file, warmup, simulation in cmd_iter)
 
-def py_out(cmd_iter):
+def py_out(cmd_iter, use_json=False):
+    if use_json:
+        out_tuple = ((outfilename(prefix, *traces)+'.txt', champsim_executable, '-w'+str(warmup), '-i'+str(simulation), '--json='+outfilename(prefix, *traces)+'.json', '--', *traces) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)
+    else:
+        out_tuple = (('/dev/null', champsim_executable, '-w'+str(warmup), '-i'+str(simulation), '--', *traces) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)
     return '''runs = [
-'''+',\n'.join('  '+str((outfilename(prefix, *traces), champsim_executable, '-w'+str(warmup), '-i'+str(simulation), *traces)) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)+'''
+'''+',\n'.join('  '+str(tup) for tup in out_tuple)+'''
 ]
 
 import subprocess, time, collections, os, multiprocessing, itertools
@@ -88,10 +112,7 @@ def get_population(population, n=None, k=1):
     if n is None:
         yield from itertools.permutations(population, k)
     else:
-        pop = tuple(population)
-        pop_size = functools.reduce(operator.mul, range(len(pop), len(pop)-k, -1))
-        targets = random.sample(range(pop_size), k=n)
-        yield from itertools.compress(itertools.permutations(pop, k), map(targets.__contains__, itertools.count()))
+        yield from sample_iter(list(population), n, k)
 
 def impl_get_population_part(directory, match='.*', recursive=True, invert_match=False):
     reg = re.compile(match)
@@ -135,6 +156,9 @@ if __name__ == '__main__':
     parser.add_argument('--format', choices=['sh','python'], default='sh',
             help='The format of the resulting output.')
 
+    parser.add_argument('--use-json', action='store_true',
+            help='If specified, use experimental ChampSim JSON output')
+
     parser.add_argument('files', nargs='+',
             help='JSON files describing the build')
 
@@ -143,9 +167,9 @@ if __name__ == '__main__':
     cmd_iter = itertools.chain(*map(parse_file, args.files))
 
     if args.format == 'sh':
-        output = sh_out(cmd_iter)
+        output = sh_out(cmd_iter, use_json=args.use_json)
     if args.format == 'python':
-        output = py_out(cmd_iter)
+        output = py_out(cmd_iter, use_json=args.use_json)
 
     print(output)
 
