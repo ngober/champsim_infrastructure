@@ -9,9 +9,11 @@ import operator
 import json
 import re
 
-def outfilename(output_directory, *trace_files):
-    crunch_names = tuple(os.path.splitext(os.path.splitext(os.path.split(tf)[1])[0])[0] for tf in trace_files)
-    return os.path.abspath(os.path.join(output_directory, '-'.join(crunch_names)))
+def out_id(*trace_files):
+    return '-'.join(os.path.splitext(os.path.splitext(os.path.split(tf)[1])[0])[0] for tf in trace_files)
+
+def out_file(output_directory, build_id):
+    return os.path.abspath(os.path.join(output_directory, build_id))
 
 def expand(fname):
     return os.path.abspath(os.path.expanduser(os.path.expandvars(fname)))
@@ -55,12 +57,14 @@ def sh_out(cmd_iter, use_json=False):
     else:
         fmtstr = 'mkdir -p $(dirname "{output_file}"); "{executable}" -w{warmup} -i{simulation} -- "{traces}" > "{output_file}.txt"'
 
-    return '\n'.join(fmtstr.format(
+    return '\n'.join(fstring.format(
             executable=champsim_executable,
             warmup=warmup,
             simulation=simulation,
             traces='" "'.join(trace_file),
-            output_file=outfilename(output_prefix, *trace_file)
+            output_prefix=output_prefix,
+            json_file=out_file(output_prefix, out_id(*trace_file)),
+            output_file=out_file(output_prefix, out_id(*trace_file))
         ) for champsim_executable, output_prefix, trace_file, warmup, simulation in cmd_iter)
 
 def py_out(cmd_iter, use_json=False):
@@ -160,7 +164,7 @@ if __name__ == '__main__':
             help='The format of the resulting output.')
 
     parser.add_argument('--use-json', action='store_true',
-            help='If specified, use experimental ChampSim JSON output')
+            help='The format of the resulting output.')
 
     parser.add_argument('files', nargs='+',
             help='JSON files describing the build')
