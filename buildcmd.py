@@ -69,48 +69,22 @@ def sh_out(cmd_iter, use_json=False):
 
 def py_out(cmd_iter, use_json=False):
     if use_json:
-        out_tuple = ((outfilename(prefix, *traces)+'.txt', champsim_executable, '-w'+str(warmup), '-i'+str(simulation), '--json='+outfilename(prefix, *traces)+'.json', '--', *traces) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)
+        out_tuple = ((out_file(prefix, out_id(*traces))+'.stdout.txt', champsim_executable, '-w'+str(warmup), '-i'+str(simulation), '--json='+out_file(prefix, out_id(*traces))+'.json', '--', *traces) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)
     else:
-        out_tuple = (('/dev/null', champsim_executable, '-w'+str(warmup), '-i'+str(simulation), '--', *traces) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)
-    return '''runs = [
-'''+',\n'.join('  '+str(tup) for tup in out_tuple)+'''
-]
+        out_tuple = ((out_file(prefix, out_id(*traces))+'.stdout.txt', champsim_executable, '-w'+str(warmup), '-i'+str(simulation), '--', *traces) for champsim_executable, prefix, traces, warmup, simulation in cmd_iter)
+    return '''import importlib.util
 
-import subprocess, time, collections, os, multiprocessing, itertools
-from timeit import default_timer as timer
-from datetime import timedelta
+spec = importlib.util.spec_from_file_location('champsim_runner', '{module_file_name}')
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
 
-start = timer()
-def begin(fname, *args):
-    t = timer()
-    print('[', timedelta(seconds=t - start), ']', 'Start', *args)
-    os.makedirs(os.path.dirname(fname), exist_ok=True)
-    f = open(fname, 'wt')
-    return f, t, subprocess.Popen(args, stdout=f, stderr=f)
-
-def check_finish(f, t, p):
-    retval = p.poll()
-    if retval is not None:
-        f.close()
-        print('[', timedelta(seconds=timer() - t), ']', 'Completed', os.path.basename(p.args[0]), 'with exit code', retval)
-    return retval
-
-heartbeat_period = 15 # seconds
-num_cpus = multiprocessing.num_cpus()
-
-processargs = collections.deque(runs)
-active_processes = []
-while processargs or active_processes:
-    unfinished = [(check_finish(*p) is None) for p in active_processes]
-    active_processes = list(itertools.compress(active_processes, unfinished))
-
-    while processargs and len(active_processes) < num_cpus:
-        active_processes.append(begin(*processargs[0]))
-        processargs.popleft()
-
-    print('[', timedelta(seconds=timer() - start), ']', 'Running:', len(active_processes), 'Finished:', len(runs)-len(active_processes)-len(processargs))
-    time.sleep(heartbeat_period)
-'''
+runner.run([
+{outstring}
+])
+'''.format(
+    module_file_name=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'champsim_runner.py'),
+    outstring=',\n'.join('  '+str(tup) for tup in out_tuple)
+  )
 
 def get_population(population, n=None, k=1):
     if n is None:
