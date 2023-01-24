@@ -57,7 +57,7 @@ def sh_out(cmd_iter, use_json=False):
     else:
         fmtstr = 'mkdir -p $(dirname "{output_file}"); "{executable}" -w{warmup} -i{simulation} -- "{traces}" > "{output_file}.txt"'
 
-    return '\n'.join(fstring.format(
+    return '\n'.join(fmtstr.format(
             executable=champsim_executable,
             warmup=warmup,
             simulation=simulation,
